@@ -1,3 +1,4 @@
 # PSO opt
-v1 -> Single swarm serial PSO for LJ min
-v2 -> Single swarm serial PSO for LJ min with a gradient term
+v1 -> Single swarm serial PSO για LJ ελάχιστα. Πρώτη έκδοση οπότε είναι λίγο πρόχειρο. Οι επόμενες προσπάθειες είναι χτισμένες πάνω σε αυτό.\n
+v2 -> Single swarm serial PSO για LJ ελάχιστα με έναν όρο 1ης παραγώγου.\n
+v3 -> Single swarm parallel PSO για LJ ελάχιστα με έναν όρο 1ης παραγώγου. Άλλαξα τα λιγότερα δυνατά στο v2 για να τρέχει τα particles παράλληλα. Είναι πολύ πιο γρήγορο απ'την serial εκδοση, ειδικά όσο αυξάνεται ο αριθμός των κύκλων PSO και των particles.\n
