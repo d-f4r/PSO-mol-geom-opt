@@ -68,9 +68,9 @@ int lj_energy(double* atom_arr, int atomn, LJ_Const* lj_arr, double* energy_grad
 	double grad_norm_sq = 0;
 	for (int i = 0; i < atomn; i++) {
 		for (int j = i + 1; j < atomn; j++) {
-			double dx = (atom_arr[3 * j] - atom_arr[3 * i]);
-			double dy = (atom_arr[3 * j + 1] - atom_arr[3 * i + 1]);
-			double dz = (atom_arr[3 * j + 2] - atom_arr[3 * i + 2]);
+			double dx = (atom_arr[3 * i] - atom_arr[3 * j]);
+			double dy = (atom_arr[3 * i + 1] - atom_arr[3 * j + 1]);
+			double dz = (atom_arr[3 * i + 2] - atom_arr[3 * j + 2]);
 			double r2 = dx * dx + dy * dy + dz * dz;
 			if (r2 < 0.7 * lj_arr->s2_m[i][j])
 				goto invalid_step;

@@ -101,6 +101,7 @@ Swarm* pso_run(Atoms* atoms, int sub_swarm_n, int sub_swarm_size, int max_iter) 
 	int dim = 3 * atomn;
 	int particlen = sub_swarm_n * sub_swarm_size;
 	size_t particle_size = dim * sizeof(double);
+	int uniq_comb = (atomn * atomn - atomn) / 2;
 
 	// center the guess geom
 	shift_to_centroid(atoms->coords, atomn);
@@ -113,6 +114,16 @@ Swarm* pso_run(Atoms* atoms, int sub_swarm_n, int sub_swarm_size, int max_iter) 
 		for (int j = i + 1; j < atomn; j++)
 			mean_sigma += lj_arr->s_m[i][j];
 	mean_sigma /= atomn;
+
+	// create a bounding box
+	double x_max = 0;
+	for (int d = 0; d < dim; d++) {
+		double x = fabs(atoms->coords[d]);
+		x_max = (x > x_max) ? x : x_max;
+	}
+	x_max = 3 * (x_max + 4);
+	// calc the diagonal of the dim dimensional search cube
+	double diag = x_max * sqrt(dim);
 
 	// ---[ set up trajectory write ]-----------------------------
 	FILE* wstream = fopen("trajectory.xyz", "w");
@@ -160,6 +171,7 @@ Swarm* pso_run(Atoms* atoms, int sub_swarm_n, int sub_swarm_size, int max_iter) 
 	swarm->gbest_e = DBL_MAX;
 	for (int s = 0; s < sub_swarm_n; s++)
 		swarm->lbest_e[s] = DBL_MAX;
+	swarm->gbest_g_norm_sq = DBL_MAX;
 
 	// kabsch is needed for every particle so carve a block beforehand
 	size_t struct_mem = particlen * sizeof(Kabsch_Arrays);
@@ -189,6 +201,7 @@ Swarm* pso_run(Atoms* atoms, int sub_swarm_n, int sub_swarm_size, int max_iter) 
 	double* gbest_x = swarm->gbest_x;
 	double* gbest_g = swarm->gbest_g;
 	double* gbest_e = &swarm->gbest_e;
+	double* gbest_g_norm_sq = &swarm->gbest_g_norm_sq;
 
 	// ---[ parallel init ]-----------------------------------------
 
@@ -247,6 +260,7 @@ Swarm* pso_run(Atoms* atoms, int sub_swarm_n, int sub_swarm_size, int max_iter) 
 							*gbest_e = *pbest_e_sp;
 							memcpy(gbest_x, pbest_x_sp, particle_size);
 							memcpy(gbest_g, pbest_g_sp, particle_size);
+							*gbest_g_norm_sq = *g_norm_sq_sp;
 						}
 						omp_unset_lock(&gbest_lock);
 					}
@@ -264,22 +278,30 @@ Swarm* pso_run(Atoms* atoms, int sub_swarm_n, int sub_swarm_size, int max_iter) 
 
 
 	// ---[ pso params ]--------------------------------------------
-	double c1_start = 2.0, c1_end = 0.8;
-	double c2_start = 0.8, c2_end = 2.0;
 	double w_start = 0.9, w_end = 0.4;
-	double v_max_start = 0.6 * mean_sigma, v_max_end = 0.001 * mean_sigma;
-	double e = 1.0E-7;
+	double v_max_start = 0.6 * mean_sigma, v_max_end = 0.05 * mean_sigma;
+	double e = 1.0E-8;
 	// -------------------------------------------------------------
 
 	for (int iter = 0; iter < max_iter; iter++) {
 
 		double pso_progress = (double) iter / max_iter;
 		double end_of_run_factor = pso_progress;
+
 		double w = w_start - (w_start - w_end) * end_of_run_factor;
 		double v_max = v_max_start - (v_max_start - v_max_end) * end_of_run_factor;
-		double c1 = c1_start - (c1_start - c1_end) * end_of_run_factor;
-		double c2 = c2_start - (c2_start - c2_end) * end_of_run_factor;
-		double c3 = 0.0001 * v_max;
+
+		double phi_max = 24 * (1 - w * w) / (7 - 5 * w);
+		double phi = 0.8 * phi_max;
+
+		double a1_start = 0.7, a1_end = 1 - a1_start;
+		double a2_start = 0.3, a2_end = 1 - a2_start;
+		double a1 = a1_start - (a1_start - a1_end) * end_of_run_factor;
+		double a2 = a2_start - (a2_start - a2_end) * end_of_run_factor;
+
+		double c1 = a1 * phi;
+		double c2 = a2 * phi;
+		double cg = 1E-4 * v_max;
 
 		// prev version had parallel subswarms
 		// this seems to be worse and threads stay idle so now the hot loops get flattened and let
@@ -312,22 +334,40 @@ Swarm* pso_run(Atoms* atoms, int sub_swarm_n, int sub_swarm_size, int max_iter) 
 				memcpy(prev_x_sp, x_sp, dim * sizeof(double));
 				memcpy(prev_v_sp, v_sp, dim * sizeof(double));
 
+				// calcuate the diversity of each particle with the lbests of the other swarms.
+				// if the current particle is close enough to an existing lbest_x of a different
+				// swarm then push that particle away from lbest(p) and pbest(p).
+				// set the diversity threshold as well.
+				int dir = 1;
+				for (int sc = s + 1; sc < sub_swarm_n; sc++) {
+					double* lbest_x_sc = &swarm->lbest_x[sc * dim];
+					double diversity = rms_p1_p2(x_sp, lbest_x_sc, atomn, uniq_comb);
+					diversity /= diag;
+					dir = (diversity < 0.009) ? - dir : dir;
+					// printf("diversity between particle %d (swarm %d) and lbest %d = %f\n", p, s, sc, diversity);
+				}
+
 				// update velocity
 				for (int d = 0; d < dim; d++) {
 					double r1 = (double) rand_r(seed) / RAND_MAX;
 					double r2 = (double) rand_r(seed) / RAND_MAX;
-					double r3 = (double) rand_r(seed) / RAND_MAX;
+					double rg = (double) rand_r(seed) / RAND_MAX;
 
-					// calcuate the gradient term: g_comp = - g / (||g||² + ε), (ε = small)
-					double g_comp = - g_sp[d] / (*g_norm_sq_sp + e);
+					// calcuate the gradient term: g_comp = - g² / (||g||² + ε), (ε = small)
+					double g_comp = - (g_sp[d] * g_sp[d]) / (*g_norm_sq_sp + e);
 
-					v_sp[d] = w * v_sp[d] + c1 * r1 * (pbest_x_sp[d] - x_sp[d]) + c2 * r2 * (lbest_x_s[d] - x_sp[d]) + c3 * r3 * g_comp;
+					v_sp[d] *= w;
+					v_sp[d] += dir * c1 * r1 * (pbest_x_sp[d] - x_sp[d]);
+					v_sp[d] += dir * c2 * r2 * (lbest_x_s[d] - x_sp[d]);
+					v_sp[d] += cg * rg * g_comp;
 
 					v_sp[d] = (v_sp[d] > v_max) ? v_max : v_sp[d];
-					v_sp[d] = (v_sp[d] < -v_max) ? -v_max : v_sp[d];
+					v_sp[d] = (v_sp[d] < - v_max) ? - v_max : v_sp[d];
 
 					// update positions
 					x_sp[d] += v_sp[d];
+					x_sp[d] = (x_sp[d] > x_max) ? x_max : x_sp[d];
+					x_sp[d] = (x_sp[d] < - x_max) ? - x_max : x_sp[d];
 				}
 
 				shift_to_centroid(x_sp, atomn);
@@ -364,6 +404,7 @@ Swarm* pso_run(Atoms* atoms, int sub_swarm_n, int sub_swarm_size, int max_iter) 
 									*gbest_e = energy;
 									memcpy(gbest_x, pbest_x_sp, particle_size);
 									memcpy(gbest_g, pbest_g_sp, particle_size);
+									*gbest_g_norm_sq = *g_norm_sq_sp;
 								}
 								omp_unset_lock(&gbest_lock);
 							}
@@ -400,11 +441,17 @@ Swarm* pso_run(Atoms* atoms, int sub_swarm_n, int sub_swarm_size, int max_iter) 
 		printf("M%d = %12.8f kj/mol\n", i, swarm->lbest_e[i]);
 	}
 
-	printf("\nbest geom energy gradient:\n");
-	for (int i = 0; i < atomn; i++) {
-		printf("%12.8f\t%12.8f\t%12.8f\n",swarm->gbest_g[3 * i], swarm->gbest_g[3 * i + 1], swarm->gbest_g[3 * i + 2]);
+	for (int s = 0; s < sub_swarm_n; s++) {
+		double* lbest_g_s = &swarm->lbest_g[s * dim];
+		printf("\nM%d energy gradient:\n", s);
+		for (int i = 0; i < atomn; i++) {
+			printf("%12.8f\t%12.8f\t%12.8f\n", lbest_g_s[3 * i], lbest_g_s[3 * i + 1], lbest_g_s[3 * i + 2]);
+		}
+		printf("\n");
 	}
 	printf("\n");
+
+	printf("best geom gradient norm = %f\n\n", sqrt(swarm->gbest_g_norm_sq));
 
 	free(sub_swarm);
 	free(kabsch_block);

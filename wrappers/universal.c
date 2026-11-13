@@ -53,6 +53,24 @@ void matrix_print(char* title_string, double** matrix, int r, int c) {
 	}
 }
 
+void matrix_print_flat(char* title_string, double* matrix, int r, int c) {
+	printf("\n>> %s\n", title_string);
+	for (int col_start = 0; col_start < c; col_start += COL_PRINT_CUTOFF) {
+		int col_end = (col_start + COL_PRINT_CUTOFF < c) ? col_start + COL_PRINT_CUTOFF : c;
+		printf("%-*s", WIDTH, "");
+		for (int j = col_start; j < col_end; j++)
+			printf(" %-*d", WIDTH, j + 1);
+		printf("\n\n");
+		for (int i = 0; i < r; i++) {
+			printf("%-*d", WIDTH, i + 1);
+			for (int j = col_start; j < col_end; j++)
+				printf(" %-*.*f", WIDTH, PREC, matrix[c * i + j]);
+			printf("\n");
+		}
+		printf("\n");
+	}
+}
+
 void matrix_elemwise_prod(double** a, double** b, double** c,  int m, int n) {
 	int total = m * n;
 	#pragma omp parallel for if(total >= 1000)

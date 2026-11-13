@@ -27,7 +27,7 @@ else
 endif
 
 ifeq ($(debug), true)
-	CFLAGS := -march=native -fopenmp -std=gnu11 -Wall -Werror -Wno-unused-function -O0 -g -fsanitize=address -MMD
+	CFLAGS := -march=native -fopenmp -std=gnu11 -Wall -Werror -Wno-unused-function -Wno-unused-variable -Wno-unused-but-set-variable -O0 -g -fsanitize=address -MMD
 	LDFLAGS += -fsanitize=address
 else
 	CFLAGS := -O3 -march=native -fopenmp -std=gnu11 -Wall -MMD

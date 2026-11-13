@@ -20,8 +20,8 @@ int main(void) {
 	read_in(filename, atoms);
 
 	int sub_swarm_n = 4;
-	int swarm_size = 20;
-	int max_iter = 301;
+	int swarm_size = 40;
+	int max_iter = 3000;
 
 	Swarm* swarm = pso_run(atoms, sub_swarm_n, swarm_size, max_iter);
 

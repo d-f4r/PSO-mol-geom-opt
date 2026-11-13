@@ -67,7 +67,7 @@ void kabsch_alignment(double* ref_arr, double* arr_to_align, int atomn, Kabsch_A
 	double det_r = 	  r[0] * (r[4] * r[8] - r[5] * r[7])
 					- r[1] * (r[3] * r[8] - r[5] * r[6])
 					+ r[2] * (r[3] * r[7] - r[4] * r[6]);
-	if (det_r < 0.0) {
+	if (det_r < 0) {
 		vt[6] *= - 1; vt[7] *= - 1; vt[8] *= - 1;
 		cblas_dgemm(CblasRowMajor, CblasTrans, CblasTrans, 3, 3, 3, 1.0, vt, 3, u, 3, 0.0, r, 3);
 	}
@@ -90,6 +90,18 @@ void kabsch_alignment(double* ref_arr, double* arr_to_align, int atomn, Kabsch_A
 	// printf("\n");
 }
 
+double score_f(double e, double e0, double g_norm_sq, double ltdm_norm_sq, int atomn, double mean_sigma, double mean_epsilon, double diversity) {
+	// double k = 1;
+	double g_n = g_norm_sq / (g_norm_sq + 1E-5);
+	double e_penalty = e / (atomn * mean_epsilon);
+	double dist_penalty = ltdm_norm_sq / (mean_sigma * mean_sigma);
+	// double div_penalty = k / (k + diversity);
+
+	double score = (0.7 * g_n  + 0.3 * e_penalty + 0.0 * dist_penalty) ;
+
+	return score;
+}
+
 
 Swarm* pso_run(Atoms* atoms, int sub_swarm_n, int sub_swarm_size, int max_iter) {
 
@@ -109,11 +121,19 @@ Swarm* pso_run(Atoms* atoms, int sub_swarm_n, int sub_swarm_size, int max_iter) 
 	// pre calc lj constants for init guess
 	LJ_Const* lj_arr = malloc(sizeof(LJ_Const));
 	precalc_lj_const(atoms, lj_arr);
-	double mean_sigma = 0.0;
+	double mean_sigma = 0, mean_epsilon = 0;
 	for (int i = 0; i < atomn; i++)
-		for (int j = i + 1; j < atomn; j++)
+		for (int j = i + 1; j < atomn; j++) {
 			mean_sigma += lj_arr->s_m[i][j];
+			mean_epsilon += lj_arr->e_m[i][j];
+		}
 	mean_sigma /= atomn;
+	mean_epsilon /= atomn;
+
+	// calculate guess geom energy
+	double e0;
+	just_lj_energy(atoms->coords, atomn, lj_arr, &e0);
+	printf("\nguess geom energy = %f\n", e0);
 
 	// create a bounding box
 	double x_max = 0;
@@ -139,17 +159,26 @@ Swarm* pso_run(Atoms* atoms, int sub_swarm_n, int sub_swarm_size, int max_iter) 
 	//				pbest_x -> sub_swarm_size * dim
 	//				pbest_g -> sub_swarm_size * dim
 	//				pbest_e -> sub_swarm_size
+	//				pbest_g_norm_sq -> sub_swarm_size
 	//				g_norm_sq -> sub_swarm_size
+	//				pbest_f -> sub_swarm_size
+	//				pbest_ltdm_norm_sq -> sub_swarm_size
 
 	// swarm:		lbest_x -> sub_swarm_n * dim
 	//				lbest_g -> sub_swarm_n * dim
 	//				lbest_e -> sub_swarm_n
+	//				lbest_g_norm_sq -> sub_swarm_n
+	//				lbest_f -> sub_swarm_n
+	//				lbest_ltdm_norm_sq -> sub_swarm_n
 	//				gbest_x -> dim
 	//				gbest_g -> dim
 	//				gbest_e -> 1 (doesnt need separate alloc)
+	//				gbest_g_norm_sq -> 1 (doesnt need separate alloc)
+	//				gbest_f -> 1 (doesnt need separate alloc)
+	//				gbest_ltdm_norm_sq -> 1 (doesnt need separate alloc)
 
-	SubSwarms* sub_swarm = malloc(sizeof(SubSwarms) + sub_swarm_n * (5 * sub_swarm_size * dim + 2 * sub_swarm_size) * sizeof(double));
-	Swarm* swarm = malloc(sizeof(Swarm) + (2 * sub_swarm_n * dim + sub_swarm_n + 2 * dim) * sizeof(double));
+	SubSwarms* sub_swarm = malloc(sizeof(SubSwarms) + sub_swarm_n * (5 * sub_swarm_size * dim + 5 * sub_swarm_size) * sizeof(double));
+	Swarm* swarm = malloc(sizeof(Swarm) + (2 * sub_swarm_n * dim + 4 * sub_swarm_n + 2 * dim) * sizeof(double));
 	if (!swarm || !sub_swarm) exit(1);
 
 	double* mem = (double*) (sub_swarm + 1);
@@ -159,19 +188,32 @@ Swarm* pso_run(Atoms* atoms, int sub_swarm_n, int sub_swarm_size, int max_iter) 
 	sub_swarm->pbest_x = mem; mem += sub_swarm_n * sub_swarm_size * dim;
 	sub_swarm->pbest_g = mem; mem += sub_swarm_n * sub_swarm_size * dim;
 	sub_swarm->pbest_e = mem; mem += sub_swarm_n * sub_swarm_size;
+	sub_swarm->pbest_g_norm_sq = mem; mem += sub_swarm_n * sub_swarm_size;
 	sub_swarm->g_norm_sq = mem; mem += sub_swarm_n * sub_swarm_size;
+	sub_swarm->pbest_f = mem; mem += sub_swarm_n * sub_swarm_size;
+	sub_swarm->pbest_ltdm_norm_sq = mem; mem += sub_swarm_n * sub_swarm_size;
 
 	mem = (double*) (swarm + 1);
 	swarm->lbest_x = mem; mem += sub_swarm_n * dim;
 	swarm->lbest_g = mem; mem += sub_swarm_n * dim;
 	swarm->lbest_e = mem; mem += sub_swarm_n;
+	swarm->lbest_g_norm_sq = mem; mem += sub_swarm_n;
+	swarm->lbest_f = mem; mem += sub_swarm_n;
+	swarm->lbest_ltdm_norm_sq = mem; mem += sub_swarm_n;
 	swarm->gbest_x = mem; mem += dim;
 	swarm->gbest_g = mem; mem += dim;
 
+	// set bests to +inf
 	swarm->gbest_e = DBL_MAX;
-	for (int s = 0; s < sub_swarm_n; s++)
+	for (int s = 0; s < sub_swarm_n; s++) {
 		swarm->lbest_e[s] = DBL_MAX;
+		swarm->lbest_g_norm_sq[s] = DBL_MAX;
+		swarm->lbest_f[s] = DBL_MAX;
+		swarm->lbest_ltdm_norm_sq[s] = DBL_MAX;
+	}
 	swarm->gbest_g_norm_sq = DBL_MAX;
+	swarm->gbest_f = DBL_MAX;
+	swarm->gbest_ltdm_norm_sq = DBL_MAX;
 
 	// kabsch is needed for every particle so carve a block beforehand
 	size_t struct_mem = particlen * sizeof(Kabsch_Arrays);
@@ -202,6 +244,8 @@ Swarm* pso_run(Atoms* atoms, int sub_swarm_n, int sub_swarm_size, int max_iter) 
 	double* gbest_g = swarm->gbest_g;
 	double* gbest_e = &swarm->gbest_e;
 	double* gbest_g_norm_sq = &swarm->gbest_g_norm_sq;
+	double* gbest_f = &swarm->gbest_f;
+	// double* gbest_ltdm_norm_sq = &swarm->gbest_ltdm_norm_sq;
 
 	// ---[ parallel init ]-----------------------------------------
 
@@ -219,6 +263,9 @@ Swarm* pso_run(Atoms* atoms, int sub_swarm_n, int sub_swarm_size, int max_iter) 
 			double* lbest_x_s = &swarm->lbest_x[s * dim];
 			double* lbest_g_s = &swarm->lbest_g[s * dim];
 			double* lbest_e_s = &swarm->lbest_e[s];
+			double* lbest_g_norm_sq = &swarm->lbest_g_norm_sq[s];
+			double* lbest_f = &swarm->lbest_f[s];
+			// double* lbest_ltdm_norm_sq = &swarm->lbest_ltdm_norm_sq[s];
 
 			int idx_ss = s * sub_swarm_size + p;
 			double* x_sp = &sub_swarm->x[idx_ss * dim];
@@ -227,7 +274,10 @@ Swarm* pso_run(Atoms* atoms, int sub_swarm_n, int sub_swarm_size, int max_iter) 
 			double* pbest_x_sp = &sub_swarm->pbest_x[idx_ss * dim];
 			double* pbest_g_sp = &sub_swarm->pbest_g[idx_ss * dim];
 			double* pbest_e_sp = &sub_swarm->pbest_e[idx_ss];
+			double* pbest_g_norm_sq_sp = &sub_swarm->pbest_g_norm_sq[idx_ss];
 			double* g_norm_sq_sp = &sub_swarm->g_norm_sq[idx_ss];
+			double* pbest_f = &sub_swarm->pbest_f[idx_ss];
+			// double* pbest_ltdm_norm_sq = &sub_swarm->pbest_ltdm_norm_sq[idx_ss];
 
 			re_init:
 			for (int d = 0; d < dim; d++) {
@@ -247,25 +297,39 @@ Swarm* pso_run(Atoms* atoms, int sub_swarm_n, int sub_swarm_size, int max_iter) 
 			memcpy(pbest_x_sp, x_sp, particle_size);
 			memcpy(pbest_g_sp, g_sp, particle_size);
 			*pbest_e_sp = energy;
+			*pbest_g_norm_sq_sp = *g_norm_sq_sp;
 
-			if (*pbest_e_sp < *lbest_e_s) {
+			// calculate the lower triangular distance matrix norm for particle p
+			double ltdm_norm_sq = dist_norm_sq(x_sp, atomn);
+
+			// assign scores
+			double score = score_f(energy, e0, *g_norm_sq_sp, ltdm_norm_sq, atomn, mean_sigma, mean_epsilon, 0);
+			*pbest_f = score;
+
+			// update lbest & gbest
+			int updated_lbest = 0;
+			if (*pbest_f < *lbest_f) {
 				omp_set_lock(&lbest_locks[s]);
-				if (*pbest_e_sp < *lbest_e_s) {
+				if (*pbest_f < *lbest_f) {
 					*lbest_e_s = *pbest_e_sp;
+					*lbest_g_norm_sq = *pbest_g_norm_sq_sp;
+					*lbest_f = *pbest_f;
 					memcpy(lbest_x_s, pbest_x_sp, particle_size);
 					memcpy(lbest_g_s, pbest_g_sp, particle_size);
-					if (*pbest_e_sp < *gbest_e) {
-						omp_set_lock(&gbest_lock);
-						if (*pbest_e_sp < *gbest_e) {
-							*gbest_e = *pbest_e_sp;
-							memcpy(gbest_x, pbest_x_sp, particle_size);
-							memcpy(gbest_g, pbest_g_sp, particle_size);
-							*gbest_g_norm_sq = *g_norm_sq_sp;
-						}
-						omp_unset_lock(&gbest_lock);
-					}
+					updated_lbest = 1;
 				}
 				omp_unset_lock(&lbest_locks[s]);
+			}
+			if (updated_lbest && (*pbest_f < *gbest_f)) {
+				omp_set_lock(&gbest_lock);
+				if (*pbest_f < *gbest_f) {
+					*gbest_e = *pbest_e_sp;
+					*gbest_g_norm_sq = *pbest_g_norm_sq_sp;
+					*gbest_f = *lbest_f;
+					memcpy(gbest_x, pbest_x_sp, particle_size);
+					memcpy(gbest_g, pbest_g_sp, particle_size);
+				}
+				omp_unset_lock(&gbest_lock);
 			}
 		}
 	}
@@ -280,7 +344,6 @@ Swarm* pso_run(Atoms* atoms, int sub_swarm_n, int sub_swarm_size, int max_iter) 
 	// ---[ pso params ]--------------------------------------------
 	double w_start = 0.9, w_end = 0.4;
 	double v_max_start = 0.6 * mean_sigma, v_max_end = 0.05 * mean_sigma;
-	double e = 1.0E-8;
 	// -------------------------------------------------------------
 
 	for (int iter = 0; iter < max_iter; iter++) {
@@ -301,7 +364,7 @@ Swarm* pso_run(Atoms* atoms, int sub_swarm_n, int sub_swarm_size, int max_iter) 
 
 		double c1 = a1 * phi;
 		double c2 = a2 * phi;
-		double cg = 1E-4 * v_max;
+		double cg = 1E-3 * v_max;
 
 		// prev version had parallel subswarms
 		// this seems to be worse and threads stay idle so now the hot loops get flattened and let
@@ -316,15 +379,24 @@ Swarm* pso_run(Atoms* atoms, int sub_swarm_n, int sub_swarm_size, int max_iter) 
 				double* lbest_x_s = &swarm->lbest_x[s * dim];
 				double* lbest_g_s = &swarm->lbest_g[s * dim];
 				double* lbest_e_s = &swarm->lbest_e[s];
+				double* lbest_g_norm_sq = &swarm->lbest_g_norm_sq[s];
+				double* lbest_f = &swarm->lbest_f[s];
+				// double* lbest_ltdm_norm_sq = &swarm->lbest_ltdm_norm_sq[s];
 
 				int idx_ss = s * sub_swarm_size + p;
 				double* x_sp = &sub_swarm->x[idx_ss * dim];
 				double* v_sp = &sub_swarm->v[idx_ss * dim];
 				double* g_sp = &sub_swarm->g[idx_ss * dim];
+				double* g_norm_sq_sp = &sub_swarm->g_norm_sq[idx_ss];
 				double* pbest_x_sp = &sub_swarm->pbest_x[idx_ss * dim];
 				double* pbest_g_sp = &sub_swarm->pbest_g[idx_ss * dim];
 				double* pbest_e_sp = &sub_swarm->pbest_e[idx_ss];
-				double* g_norm_sq_sp = &sub_swarm->g_norm_sq[idx_ss];
+				double* pbest_g_norm_sq_sp = &sub_swarm->pbest_g_norm_sq[idx_ss];
+				double* pbest_f = &sub_swarm->pbest_f[idx_ss];
+				// double* pbest_ltdm_norm_sq = &sub_swarm->pbest_ltdm_norm_sq[idx_ss];
+
+				// check for previous iter convergence and stop current particle
+				if (*lbest_g_norm_sq < 1E-6) continue;
 
 				unsigned int* seed = &swarm_seeds[idx_ss];
 
@@ -334,32 +406,54 @@ Swarm* pso_run(Atoms* atoms, int sub_swarm_n, int sub_swarm_size, int max_iter) 
 				memcpy(prev_x_sp, x_sp, dim * sizeof(double));
 				memcpy(prev_v_sp, v_sp, dim * sizeof(double));
 
-				// calcuate the diversity of each particle with the lbests of the other swarms.
-				// if the current particle is close enough to an existing lbest_x of a different
-				// swarm then push that particle away from lbest(p) and pbest(p).
-				// set the diversity threshold as well.
-				int dir = 1;
-				for (int sc = s + 1; sc < sub_swarm_n; sc++) {
+				// find the closest lbest to current particle
+				int closest_lbest_sub_swarm_idx;
+				double closest_lbest_distance = DBL_MAX;
+				omp_set_lock(&lbest_locks[s]);
+				for (int sc = 0; sc < sub_swarm_n; sc++) {
+					if (sc == s) continue;
 					double* lbest_x_sc = &swarm->lbest_x[sc * dim];
-					double diversity = rms_p1_p2(x_sp, lbest_x_sc, atomn, uniq_comb);
-					diversity /= diag;
-					dir = (diversity < 0.005) ? - dir : dir;
-					// printf("diversity between particle %d (swarm %d) and lbest %d = %f\n", p, s, sc, diversity);
+					double distance = p1_p2_norm_sq(x_sp, lbest_x_sc, dim);
+					if (distance < closest_lbest_distance) {
+						closest_lbest_sub_swarm_idx = sc;
+						closest_lbest_distance = distance;
+					}
+				}
+				omp_unset_lock(&lbest_locks[s]);
+
+				// project the gradient vector on the d = x(p) - lbest(p_i) vector and
+				// substruct out the part that pulls the particle towards the nearest minimum
+				// along the d axis.
+				// whats left pulls the particle around that minimum
+				double* closest_lbest_x = &swarm->lbest_x[closest_lbest_sub_swarm_idx * dim];
+				double p_scp_norm_sq = closest_lbest_distance;
+
+				// calculate the g_comp scalar numerator
+				double g_comp_num = 0.0;
+				for (int d = 0; d < dim; d++) {
+					g_comp_num += g_sp[d] * (x_sp[d] - closest_lbest_x[d]);
 				}
 
+				// calculate the diversity between p and the closest lbest
+				double diversity = rms_p1_p2(x_sp, closest_lbest_x, atomn, uniq_comb);
+				diversity /= diag;
+
 				// update velocity
+				omp_set_lock(&lbest_locks[s]);
 				for (int d = 0; d < dim; d++) {
 					double r1 = (double) rand_r(seed) / RAND_MAX;
 					double r2 = (double) rand_r(seed) / RAND_MAX;
 					double rg = (double) rand_r(seed) / RAND_MAX;
 
-					// calcuate the gradient term: g_comp = - g² / (||g||² + ε), (ε = small)
-					double g_comp = - (g_sp[d] * g_sp[d]) / (*g_norm_sq_sp + e);
+					// calculate the gradient term: g_comp = g - ((x - min_c) / ||x - min_c||²) * (x - min_c)
+					double g_comp = g_sp[d] - g_comp_num * (x_sp[d] - closest_lbest_x[d]) / p_scp_norm_sq;
+					// normalize it
+					g_comp /= sqrt(*g_norm_sq_sp);
 
 					v_sp[d] *= w;
-					v_sp[d] += dir * c1 * r1 * (pbest_x_sp[d] - x_sp[d]);
-					v_sp[d] += dir * c2 * r2 * (lbest_x_s[d] - x_sp[d]);
-					v_sp[d] += cg * rg * g_comp;
+					v_sp[d] += c1 * r1 * (pbest_x_sp[d] - x_sp[d]);
+					v_sp[d] += c2 * r2 * (lbest_x_s[d] - x_sp[d]);
+					v_sp[d] += 0 * cg * rg * g_comp;
 
 					v_sp[d] = (v_sp[d] > v_max) ? v_max : v_sp[d];
 					v_sp[d] = (v_sp[d] < - v_max) ? - v_max : v_sp[d];
@@ -373,6 +467,7 @@ Swarm* pso_run(Atoms* atoms, int sub_swarm_n, int sub_swarm_size, int max_iter) 
 				shift_to_centroid(x_sp, atomn);
 				shift_to_centroid(v_sp, atomn);
 				kabsch_alignment(gbest_x, x_sp, atomn, &kabsch_block[idx_ss], v_sp);
+				omp_unset_lock(&lbest_locks[s]);
 
 				// calc lj energy for particle p and check for step validity
 				// if the step is invalid send the velocity to the oposite direction and half it
@@ -387,30 +482,45 @@ Swarm* pso_run(Atoms* atoms, int sub_swarm_n, int sub_swarm_size, int max_iter) 
 					continue;
 				}
 
+				// calculate the lower triangular distance matrix norm for particle p
+				double ltdm_norm_sq = dist_norm_sq(x_sp, atomn);
+
+				// assign scores
+				double score = score_f(energy, e0, *g_norm_sq_sp, ltdm_norm_sq, atomn, mean_sigma, mean_epsilon, diversity);
+
 				// update personal, local & global best
-				if (energy < *pbest_e_sp) {
+				int updated_pbest = 0;
+				if (score <= *pbest_f) {
 					*pbest_e_sp = energy;
+					*pbest_g_norm_sq_sp = *g_norm_sq_sp;
+					*pbest_f = score;
 					memcpy(pbest_x_sp, x_sp, dim * sizeof(double));
 					memcpy(pbest_g_sp, g_sp, dim * sizeof(double));
-					if (energy < *lbest_e_s) {
-						omp_set_lock(&lbest_locks[s]);
-						if (energy < *lbest_e_s) {
-							*lbest_e_s = energy;
-							memcpy(lbest_x_s, x_sp, dim * sizeof(double));
-							memcpy(lbest_g_s, g_sp, dim * sizeof(double));
-							if (*pbest_e_sp < *gbest_e) {
-								omp_set_lock(&gbest_lock);
-								if (energy < *gbest_e) {
-									*gbest_e = energy;
-									memcpy(gbest_x, pbest_x_sp, particle_size);
-									memcpy(gbest_g, pbest_g_sp, particle_size);
-									*gbest_g_norm_sq = *g_norm_sq_sp;
-								}
-								omp_unset_lock(&gbest_lock);
-							}
-						}
-						omp_unset_lock(&lbest_locks[s]);
+					updated_pbest = 1;
+				}
+				int updated_lbest = 0;
+				if (updated_pbest && (score <= *lbest_f)) {
+					omp_set_lock(&lbest_locks[s]);
+					if (score <= *lbest_f) {
+						*lbest_e_s = energy;
+						*lbest_g_norm_sq = *pbest_g_norm_sq_sp;
+						*lbest_f = *pbest_f;
+						memcpy(lbest_x_s, x_sp, dim * sizeof(double));
+						memcpy(lbest_g_s, g_sp, dim * sizeof(double));
+						updated_lbest = 1;
 					}
+					omp_unset_lock(&lbest_locks[s]);
+				}
+				if (updated_lbest && (score <= *gbest_f)) {
+					omp_set_lock(&gbest_lock);
+					if (score <= *gbest_f) {
+						*gbest_e = energy;
+						*gbest_g_norm_sq = *pbest_g_norm_sq_sp;
+						*gbest_f = *pbest_f;
+						memcpy(gbest_x, pbest_x_sp, particle_size);
+						memcpy(gbest_g, pbest_g_sp, particle_size);
+					}
+					omp_unset_lock(&gbest_lock);
 				}
 			}
 		}
@@ -426,9 +536,9 @@ Swarm* pso_run(Atoms* atoms, int sub_swarm_n, int sub_swarm_size, int max_iter) 
 			}
 		}
 	}
-	omp_unset_lock(&gbest_lock);
+	omp_destroy_lock(&gbest_lock);
 	for (int s = 0; s < sub_swarm_n; s++)
-		omp_unset_lock(&lbest_locks[s]);
+		omp_destroy_lock(&lbest_locks[s]);
 
 	fclose(wstream);
 
@@ -447,14 +557,16 @@ Swarm* pso_run(Atoms* atoms, int sub_swarm_n, int sub_swarm_size, int max_iter) 
 		for (int i = 0; i < atomn; i++) {
 			printf("%12.8f\t%12.8f\t%12.8f\n", lbest_g_s[3 * i], lbest_g_s[3 * i + 1], lbest_g_s[3 * i + 2]);
 		}
-		printf("\n");
 	}
 	printf("\n");
 
-	printf("best geom gradient norm = %f\n\n", sqrt(swarm->gbest_g_norm_sq));
+	for (int a = 0; a < atomn; a++) {
+		printf("%s\t%12.8f\t%12.8f\t%12.8f\n", atoms->types[a], gbest_x[3 * a], gbest_x[3 * a + 1], gbest_x[3 * a + 2]);
+	}
 
 	free(sub_swarm);
 	free(kabsch_block);
+	free(lj_arr->e_m);
 	free(lj_arr->s_m);
 	free(lj_arr->s2_m);
 	free(lj_arr->c6_m);

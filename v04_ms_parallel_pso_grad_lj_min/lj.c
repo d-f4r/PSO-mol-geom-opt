@@ -68,9 +68,9 @@ int lj_energy(double* atom_arr, int atomn, LJ_Const* lj_arr, double* energy_grad
 	double grad_norm_sq = 0;
 	for (int i = 0; i < atomn; i++) {
 		for (int j = i + 1; j < atomn; j++) {
-			double dx = (atom_arr[3 * j] - atom_arr[3 * i]);
-			double dy = (atom_arr[3 * j + 1] - atom_arr[3 * i + 1]);
-			double dz = (atom_arr[3 * j + 2] - atom_arr[3 * i + 2]);
+			double dx = (atom_arr[3 * i] - atom_arr[3 * j]);
+			double dy = (atom_arr[3 * i + 1] - atom_arr[3 * j + 1]);
+			double dz = (atom_arr[3 * i + 2] - atom_arr[3 * j + 2]);
 			double r2 = dx * dx + dy * dy + dz * dz;
 			if (r2 < 0.7 * lj_arr->s2_m[i][j])
 				goto invalid_step;
@@ -101,10 +101,12 @@ int lj_energy(double* atom_arr, int atomn, LJ_Const* lj_arr, double* energy_grad
 			energy_gradient_arr_out[3 * j] -= gx;
 			energy_gradient_arr_out[3 * j + 1] -= gy;
 			energy_gradient_arr_out[3 * j + 2] -= gz;
-
-			// calculate the squared gradient norm: ||∇E||² = ∑g²
-			grad_norm_sq += gx * gx + gy * gy + gz * gz;
 		}
+	}
+	// calculate the squared gradient norm: ||∇E||² = ∑g²
+	for (int d = 0; d < 3 * atomn; d++) {
+		double g = energy_gradient_arr_out[d];
+		grad_norm_sq += g * g;
 	}
 	*energy_out = energy;
 	*grad_norm_sq_out = grad_norm_sq;
