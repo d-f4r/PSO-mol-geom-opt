@@ -21,11 +21,8 @@ int sort_elites(const void* a, const void* b) {
 	return 0;
 }
 
-double score_f(double e, double e_min, double e_range, double g, double g_min, double g_range) {
-	double e_term = (e - e_min) / e_range;
-	double g_term = (g - g_min) / g_range;
+double score_f(double e) {
 
-	// return (0.1 * e_term + g_term);
 	return (e);
 }
 
@@ -35,7 +32,7 @@ Swarm* pso_run(Atoms* atoms, int swarm_size, int max_iter) {
 	double max_x_perturbation = 2.5;
 	double max_v_perturbation = 0.1;
 
-	int eliten = 6;
+	int eliten = 4;
 	int elites[eliten];
 	int is_elite[swarm_size], indices[swarm_size];
 	for (int p = 0; p < swarm_size; p++) {
@@ -122,11 +119,7 @@ Swarm* pso_run(Atoms* atoms, int swarm_size, int max_iter) {
 		double* g_p = &swarm->g[p * dim];
 		double* pbest_x_p = &swarm->pbest_x[p * dim];
 		double* pbest_g_p = &swarm->pbest_g[p * dim];
-		double* pbest_e_p = &swarm->pbest_e[p];
-		double* pbest_g_norm_sq_p = &swarm->pbest_g_norm_sq[p];
 		double* prev_iter_pbest_x_p = &swarm->prev_iter_pbest_x[p * dim];
-		double* prev_iter_pbest_e_p = &swarm->prev_iter_pbest_e[p];
-		double* prev_iter_pbest_g_norm_sq_p = &swarm->prev_iter_pbest_g_norm_sq[p];
 
 		re_init:
 		for (int d = 0; d < dim; d++) {
@@ -144,42 +137,20 @@ Swarm* pso_run(Atoms* atoms, int swarm_size, int max_iter) {
 		if (invalid_step)
 			goto re_init;
 
+		// score particle
+		double score = score_f(energy);
+
 		// update bests
 		memcpy(pbest_x_p, x_p, particle_size);
 		memcpy(prev_iter_pbest_x_p, x_p, particle_size);
 		memcpy(pbest_g_p, g_p, particle_size);
-		*pbest_e_p = energy;
-		*prev_iter_pbest_e_p = energy;
-		*pbest_g_norm_sq_p = g_norm_sq_p;
-		*prev_iter_pbest_g_norm_sq_p = g_norm_sq_p;
-
-	}
-	// ---[ serial scoring ]----------------------------------------
-	// scores are normalized across the values range so everything needs to be already computed
-	double e_min = swarm->pbest_e[0], e_max = swarm->pbest_e[0];
-	double g_min = swarm->pbest_g_norm_sq[0], g_max = swarm->pbest_g_norm_sq[0];
-
-	for (int p = 1; p < swarm_size; p++) {
-		double e = swarm->pbest_e[p];
-		double g = swarm->pbest_g_norm_sq[p];
-		e_min = (e < e_min) ? e : e_min;
-		e_max = (e > e_max) ? e : e_max;
-		g_min = (g < g_min) ? g : g_min;
-		g_max = (g > g_max) ? g : g_max;
-	}
-	double e_range = e_max - e_min;
-	e_range = (e_range < 1E-12) ? 1.0 : e_range;
-	double g_range = g_max - g_min;
-	g_range = (g_range < 1E-12) ? 1.0 : g_range;
-
-	for (int p = 0; p < swarm_size; p++) {
-		double* pbest_e_p = &swarm->pbest_e[p];
-		double* pbest_g_norm_sq_p = &swarm->pbest_g_norm_sq[p];
-		
-		double score = score_f(*pbest_e_p, e_min, e_range, *pbest_g_norm_sq_p, g_min, g_range);
-
+		swarm->pbest_e[p] = energy;
+		swarm->prev_iter_pbest_e[p] = energy;
+		swarm->pbest_g_norm_sq[p] = g_norm_sq_p;
+		swarm->prev_iter_pbest_g_norm_sq[p] = g_norm_sq_p;
 		swarm->pbest_f[p] = score;
 		swarm->prev_iter_pbest_f[p] = score;
+
 	}
 
 	// ---[ serial elites init ]------------------------------------
@@ -224,15 +195,10 @@ Swarm* pso_run(Atoms* atoms, int swarm_size, int max_iter) {
 
 		double c1 = a1 * phi;
 		double c2 = a2 * phi;
-		// double cg = 0.5;
 
 		double similarity_thresh_start = 0.04;
 		double similarity_thresh_end = 0.004;
 		double similarity_thresh = similarity_thresh_start - (similarity_thresh_start - similarity_thresh_end) * end_of_run_factor;
-
-		// int skip_g_comp = 1;
-		// if (iter < normal_step)
-		// 	skip_g_comp = 1;
 
 		// ---[ parallel run ]------------------------------------------
 		#pragma omp parallel for schedule(guided, 2)
@@ -266,7 +232,6 @@ Swarm* pso_run(Atoms* atoms, int swarm_size, int max_iter) {
 			}
 			double* lbest_x_p = &swarm->prev_iter_pbest_x[lbest_idx * dim];
 			double c2_p = (is_elite[p]) ? 0 : c2;
-			// double cg_p = (is_elite[p]) ? 0 : cg;
 
 			// // ---[ d-ring topology ]---------------------------------------
 			// int next_particle_idx = (p + 1) % swarm_size;
@@ -306,86 +271,9 @@ Swarm* pso_run(Atoms* atoms, int swarm_size, int max_iter) {
 				double r1 = (double) rand_r(seed) / RAND_MAX;
 				double r2 = (double) rand_r(seed) / RAND_MAX;
 
-				v_pos_p[d] = w * v_p[d];
-				v_pos_p[d] += c1 * r1 * (prev_iter_pbest_x_p[d] - x_p[d]);
-				v_pos_p[d] += c2_p * r2 * (lbest_x_p[d] - x_p[d]);
-
-				v_pos_norm_sq += v_pos_p[d] * v_pos_p[d];
-
-				// v_p[d] *= w;
-				// v_p[d] += c1 * r1 * (prev_iter_pbest_x_p[d] - x_p[d]);
-				// v_p[d] += c2_p * r2 * (lbest_x_p[d] - x_p[d]);
-				//
-				// v_p[d] = (v_p[d] > v_max) ? v_max : v_p[d];
-				// v_p[d] = (v_p[d] < - v_max) ? - v_max : v_p[d];
-				//
-				// // update positions
-				// x_p[d] += v_p[d];
-			}
-
-			// ---[ gradient term calc ]------------------------------------
-			// double g_comp[dim];
-			// if (!skip_g_comp) {
-			//
-			// 	// find closest elite
-			// 	double it_eigvs_p[6];
-			// 	int closest_elite_idx = elites[0];
-			// 	calc_inertia_tens_eigv(x_p, atomn, const_arr->weights_vec, &it_eigvs_p[0]);
-			// 	calc_inertia_tens_eigv(&swarm->prev_iter_pbest_x[elites[0] * dim], atomn, const_arr->weights_vec, &it_eigvs_p[3]);
-			// 	double min_sim = it_eigv_similarity_check(&it_eigvs_p[0], &it_eigvs_p[3]);
-			// 	for (int e = 1; e < eliten; e++) {
-			// 		calc_inertia_tens_eigv(&swarm->prev_iter_pbest_x[elites[e] * dim], atomn, const_arr->weights_vec, &it_eigvs_p[3]);
-			// 		double sim = it_eigv_similarity_check(&it_eigvs_p[0], &it_eigvs_p[3]);
-			// 		if (sim < min_sim) {
-			// 			min_sim = sim;
-			// 			closest_elite_idx = elites[e];
-			// 		}
-			// 	}
-			//
-			// 	// create a local copy of that elite and align it with p
-			// 	double aligned_elite[dim];
-			// 	memcpy(aligned_elite, &swarm->prev_iter_pbest_x[closest_elite_idx * dim], dim * sizeof(double));
-			// 	kabsch_optimal_rot(x_p, aligned_elite, atomn, kabsch_block);
-			// 	kabsch_rotation(aligned_elite, atomn, kabsch_block);
-			//
-			// 	// calc g_comp = g - g * ((x - x_min) / |x - x_min|²) * (x - x_min)
-			// 	// = g - (g * u / u²) * u, parenthesis is a scalar
-			// 	double g_comp_norm_sq = 0; 
-			// 	double u_d[dim];
-			// 	double g_dot_u = 0;
-			// 	double u_dot_u = 0;
-			// 	for (int d = 0; d < dim; d++) {
-			// 		u_d[d] = x_p[d] - aligned_elite[d];
-			// 		g_dot_u += g_p[d] * u_d[d];
-			// 		u_dot_u += u_d[d] * u_d[d];
-			// 	}
-			// 	if (u_dot_u < 1E-12)
-			// 		for (int d = 0; d < dim; d++)
-			// 			g_comp[d] = 0;
-			// 	else {
-			// 		for (int d = 0; d < dim; d++) {
-			// 			g_comp[d] = g_p[d] - (g_dot_u / u_dot_u) * u_d[d];
-			// 			g_comp_norm_sq += g_comp[d] * g_comp[d];
-			// 		}
-			// 	}
-			//
-			// 	// extra normalization step in case g_comp is bigger than the rest
-			// 	if (g_comp_norm_sq > v_pos_norm_sq && g_comp_norm_sq > 1E-12) {
-			// 		double scale = sqrt(v_pos_norm_sq / g_comp_norm_sq);
-			// 		for (int d = 0; d < dim; d++)
-			// 			g_comp[d] *= scale;
-			// 	}
-			// }
-			// -------------------------------------------------------------
-
-			// update velocity
-			for (int d = 0; d < dim; d++) {
-				// if (skip_g_comp)
-				// 	v_p[d] = v_pos_p[d];
-				// else {
-				// 	double rg = (double) rand_r(seed) / RAND_MAX;
-				// 	v_p[d] = v_pos_p[d] + cg_p * rg * g_comp[d];
-				// }
+				v_p[d] *= w;
+				v_p[d] += c1 * r1 * (prev_iter_pbest_x_p[d] - x_p[d]);
+				v_p[d] += c2_p * r2 * (lbest_x_p[d] - x_p[d]);
 
 				v_p[d] = (v_p[d] > v_max) ? v_max : v_p[d];
 				v_p[d] = (v_p[d] < - v_max) ? - v_max : v_p[d];
@@ -413,8 +301,8 @@ Swarm* pso_run(Atoms* atoms, int swarm_size, int max_iter) {
 				continue;
 			}
 
-			double score = score_f(energy, e_min, e_range, g_norm_sq_p, g_min, g_range);
-			double prev_score = score_f(*prev_iter_pbest_e_p, e_min, e_range, *prev_iter_pbest_g_norm_sq_p, g_min, g_range);
+			double score = score_f(energy);
+			double prev_score = score_f(*prev_iter_pbest_e_p);
 
 			if (score < prev_score) {
 				*pbest_e_p = energy;
@@ -433,33 +321,6 @@ Swarm* pso_run(Atoms* atoms, int swarm_size, int max_iter) {
 		memcpy(swarm->prev_iter_pbest_f, swarm->pbest_f, swarm_size * sizeof(double));
 		for (int p = 0; p < swarm_size; p++)
 			is_elite[p] = 0;
-
-		// update minmaxes & ranges
-		e_min = swarm->pbest_e[0], e_max = swarm->pbest_e[0];
-		g_min = swarm->pbest_g_norm_sq[0], g_max = swarm->pbest_g_norm_sq[0];
-
-		for (int p = 1; p < swarm_size; p++) {
-			double e = swarm->pbest_e[p];
-			double g = swarm->pbest_g_norm_sq[p];
-			e_min = (e < e_min) ? e : e_min;
-			e_max = (e > e_max) ? e : e_max;
-			g_min = (g < g_min) ? g : g_min;
-			g_max = (g > g_max) ? g : g_max;
-		}
-		e_range = e_max - e_min;
-		e_range = (e_range < 1E-12) ? 1.0 : e_range;
-		g_range = g_max - g_min;
-		g_range = (g_range < 1E-12) ? 1.0 : g_range;
-
-		for (int p = 0; p < swarm_size; p++) {
-			double* pbest_e_p = &swarm->pbest_e[p];
-			double* pbest_g_norm_sq_p = &swarm->pbest_g_norm_sq[p];
-
-			double score = score_f(*pbest_e_p, e_min, e_range, *pbest_g_norm_sq_p, g_min, g_range);
-
-			swarm->pbest_f[p] = score;
-			swarm->prev_iter_pbest_f[p] = score;
-		}
 
 		// update elites arr
 		ref_score = swarm->pbest_f;
@@ -515,7 +376,7 @@ Swarm* pso_run(Atoms* atoms, int swarm_size, int max_iter) {
 		LAPACKE_dsyev(LAPACK_ROW_MAJOR, 'N', 'U', dim, H, dim, eigv);
 
 		printf("rank %3d (p = %3d): E = %12.8f kj/mol, ||∇E||² = %12.8f, 1st eigv(H) = %8.4f, 6th eigv(H) =  %8.4f",
-		k + 1, indices[k] + 1, swarm->pbest_e[indices[k]], swarm->pbest_g_norm_sq[indices[k]], eigv[0], eigv[5]);
+		k + 1, indices[k] + 1, swarm->pbest_e[indices[k]], swarm->pbest_g_norm_sq[indices[k]], eigv[0], eigv[6]);
 		if (is_elite[indices[k]])
 			printf("\t <--- is elite\n");
 		else printf("\n");

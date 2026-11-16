@@ -16,7 +16,6 @@ typedef struct {
 	double* prev_iter_pbest_e;
 	double* prev_iter_pbest_f;
 	double* prev_iter_pbest_g_norm_sq;
-	double* elite_fingers;
 } Swarm;
 
 Swarm* pso_run(Atoms* atoms, int sub_swarm_size, int max_iter);
